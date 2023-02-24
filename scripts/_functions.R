@@ -11,6 +11,7 @@ library(caret)
 library(rgdal)
 library(gstat)
 library(tune)
+library(epiR)
 library(clhs)
 library(sf)
 library(sp)
@@ -27,6 +28,14 @@ assign_significance <- function(x) {
     x < 0.01 & x > 0.001 ~ "**",
     x < 0.001 ~ "***"
   )
+}
+
+ndmi_sentinel_2 <- function(raster, band_8 = "B8", band_11 = "B11") {
+  return(calc(raster, function (x) {(x[band_8] - x[band_11]) / (x[band_8] + x[band_11])}))
+}
+
+ndwi_sentinel_2 <- function(raster, band_8 = "B8", band_12 = "B12") {
+  return(calc(raster, function (x) {(x[band_8] - x[band_12]) / (x[band_8] + x[band_12])}))
 }
 
 annotate_valid_scores <- function(data, r2, rmse, y_coord) {
@@ -197,7 +206,7 @@ build_models <- function(data, target_vars, explan_vars, seed = 200) {
   return(models_list)
 }
 
-model_scores_figures <- function(models) {
+model_scores_cv_figures <- function(models) {
   var_names <- names(models)
   for (i in seq_len(length(models))) {
     

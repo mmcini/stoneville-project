@@ -93,11 +93,28 @@ for (i in names(cor_plot_data[-1])) {
 }
 ggarrange(plotlist = list_of_cor_plots)
 
-library(epiR)
+list_of_cor_plots <- list()
+for (i in names(cor_plot_data[-1])) {
+  plot <- ggplot(cor_plot_data, aes_string(x = "variables", y = i)) +
+    geom_histogram(stat = "identity") + geom_label(aes(label = pvalue_plot_data[[i]])) +
+    geom_hline(yintercept = -0.5) +
+    scale_y_continuous(limits = c(-1, 0.1), breaks = seq(-1, 1, 0.25))
+  list_of_cor_plots[[i]] <- ggplot_gtable(ggplot_build(plot)) # to solve lazy evaluation  
+}
+ggarrange(plotlist = list_of_cor_plots)
 
-test <- cbind(raster_soil_data[, !names(OM_valid_data) %in% c(target_vars)], OM = raster_soil_data$OM_PERCENT)
-
-prcc <- epi.prcc(test)
+list_of_cor_plots <- list()
+for (i in names(cor_plot_data[-1])) {
+  data <- raster_soil_data %>% as_tibble() %>% select(-geometry)
+  test <- cbind(data[,!names(data) %in% names(cor_plot_data[-1])], OM = data[[i]])
+  prcc <- epi.prcc(test) %>%
+    mutate(var = factor(var, levels = var, ordered = T))
+  plot <- ggplot(prcc, aes_string(x = "var", y = "est")) + ylab(i) +
+    geom_histogram(stat = "identity") + geom_label(aes(label = assign_significance(prcc$p.value))) +
+    scale_y_continuous(limits = c(-0.3, 0.3), breaks = seq(-0.5, 0.5, 0.25))
+  list_of_cor_plots[[i]] <- ggplot_gtable(ggplot_build(plot)) # to solve lazy evaluation  
+}
+ggarrange(plotlist = list_of_cor_plots)
 
 # Modeling #########################################################################################
 target_vars <- c("OM_PERCENT", "CEC", "PPM_P", "PPM_K", "PPM_MG",
