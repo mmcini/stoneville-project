@@ -3,7 +3,7 @@ source("scripts/_functions.R")
 # Loading the data #################################################################################
 raw_soil_data <- read_sf("GIS/shapes/swmru_datasites_point_proj_utm15.shp")
 raw_soil_data <- raw_soil_data %>%
-             select(grep("PPM_.", colnames(raw_soil_data)), "OM_PERCENT", "CEC", "WATER_PH")
+                 select(grep("PPM_.", colnames(raw_soil_data)), "OM_PERCENT", "CEC", "WATER_PH")
 crs <- CRS("+proj=utm +zone=15 +datum=WGS84 +units=m +no_defs +type=crs")
 raw_soil_data <- st_transform(raw_soil_data, crs)
 
@@ -21,18 +21,28 @@ for(i in as.character(unique_dates)) {
   paths <- raster_files %>%
            filter(dates == i) %>%
            select(files)
-    list_of_bricks[[i]] <- stack(paths[[1]])
-    crs(list_of_bricks[[i]]) <- crs
-    names(list_of_bricks[[i]]) <- paste0("B", 1:nlayers(list_of_bricks[[i]]))
+  list_of_bricks[[i]] <- stack(paths[[1]])
+  crs(list_of_bricks[[i]]) <- crs
+  names(list_of_bricks[[i]]) <- paste0("B", 1:nlayers(list_of_bricks[[i]]))
 }
 
 dem <- raster("GIS/rasters/DEM/DEM_1m_small_clip_USGS_3DEP_stoneville.tif")
 dem <- projectRaster(dem, crs = crs)
 
 # Extracting data from rasters #####################################################################
-bands_2017 <- list_of_bricks[["2017-05-01"]]
-raster_soil_data <- cbind(raw_soil_data, raster::extract(bands_2017, raw_soil_data)) %>%
-                    cbind(elevation = raster::extract(dem, raw_soil_data))
+area_of_interest <- st_read("GIS/shapes/SWMRU_extent.shp")
+area_of_interest <- st_transform(area_of_interest, crs)
+
+bands_2017 <- list_of_bricks[["2017-05-01"]] %>%
+              terra::mask(area_of_interest)
+ndmi <- ndmi_sentinel_2(bands_2017)
+ndwi <- ndwi_sentinel_2(bands_2017)
+resamp_dem <- terra::resample(dem, bands_2017)
+
+cropped_bands_2017 <- stack(bands_2017, resamp_dem, ndmi, ndwi)
+names(cropped_bands_2017) <- c(names(bands_2017), "elevation", "ndmi", "ndwi")
+
+raster_soil_data <- cbind(raw_soil_data, raster::extract(cropped_bands_2017, raw_soil_data))
 
 # Descriptive stats ################################################################################
 pivoted_data <- raw_soil_data %>%
@@ -51,10 +61,10 @@ ggplot(pivoted_data, aes(x = values)) +
 
 ## Correlations
 cor <- raster_soil_data %>%
-       as_tibble() %>% 
-       select(-geometry) %>%
-       drop_na() %>%
-       cor(method = "spearman")
+        as_tibble() %>% 
+        select(-geometry) %>%
+        drop_na() %>%
+        cor(method = "spearman")
 cor_pvalue <- raster_soil_data %>%
               as_tibble() %>%
               select(-geometry) %>%
@@ -70,11 +80,11 @@ corrplot::corrplot(cor, method = "color", order = "hclust",
 target_vars <- c("OM_PERCENT", "CEC", "PPM_P", "PPM_K", "PPM_MG",
                  "PPM_CA", "PPM_S", "PPM_ZN", "WATER_PH")
 cor_plot_data <- cor %>%
-                 as_tibble() %>%
-                 add_column(variables = rownames(cor)) %>%
-                 select("variables", target_vars) %>%
-                 filter(!variables %in% target_vars) %>%
-                 mutate(variables = factor(variables, levels = variables, ordered = T))
+  as_tibble() %>%
+  add_column(variables = rownames(cor)) %>%
+  select("variables", target_vars) %>%
+  filter(!variables %in% target_vars) %>%
+  mutate(variables = factor(variables, levels = variables, ordered = T))
 
 pvalue_plot_data <- cor_pvalue$p %>%
                     as_tibble() %>%
@@ -84,14 +94,9 @@ pvalue_plot_data <- cor_pvalue$p %>%
                     filter(!variables %in% target_vars) %>%
                     mutate(variables = factor(variables, levels = variables, ordered = T))
 
-list_of_cor_plots <- list()
 for (i in names(cor_plot_data[-1])) {
-  plot <- ggplot(cor_plot_data, aes_string(x = "variables", y = i)) +
-    geom_histogram(stat = "identity") + geom_label(aes(label = pvalue_plot_data[[i]])) +
-    scale_y_continuous(limits = c(-1, 0.1), breaks = seq(-1, 1, 0.25))
-  list_of_cor_plots[[i]] <- plot
+  print(paste(pvalue_plot_data[[i]]))
 }
-ggarrange(plotlist = list_of_cor_plots)
 
 list_of_cor_plots <- list()
 for (i in names(cor_plot_data[-1])) {
@@ -117,36 +122,49 @@ for (i in names(cor_plot_data[-1])) {
 ggarrange(plotlist = list_of_cor_plots)
 
 # Modeling #########################################################################################
-target_vars <- c("OM_PERCENT", "CEC", "PPM_P", "PPM_K", "PPM_MG",
-                 "PPM_CA", "PPM_S", "PPM_ZN", "WATER_PH")
-explanatory_vars <- c("elevation","B3", "B6", "B7", "B8", "B11", "B12")
+target_vars <- c("OM_PERCENT")
+explanatory_vars <- c("elevation", "ndmi", "B3", "B8", "B11")
 data <- raster_soil_data %>%
         as_tibble()
 
 ## Cross validation models and scores
 cv_models_list <- build_cv_models(data, target_vars, explanatory_vars, seed = 200)
-model_scores_figures(cv_models_list)
-model_scores_tables(cv_models_list, "rf_scores")
+model_scores_cv_figures(cv_models_list)
+model_scores_tables(cv_models_list, "rf_scores", return = T)
 
 ## Models using all data available
 models_list <- build_models(data, target_vars, explanatory_vars, seed = 200)
 
 # Predicting rasters ###############################################################################
-area_of_interest <- st_read("GIS/shapes/SWMRU_extent.shp")
-area_of_interest <- st_transform(area_of_interest, crs)
+df_cropped_bands_2017 <- cropped_bands_2017 %>%
+  as.data.frame(xy = T) %>%
+  drop_na()
 
-cropped_bands_2017 <- terra::crop(bands_2017, area_of_interest)
-resamp_dem <- terra::resample(dem, cropped_bands_2017)
-cropped_bands_dem_2017 <- stack(cropped_bands_2017, elevation = resamp_dem) %>%
-                          as.data.frame(xy = T) %>% 
-                          rename("elevation" = "DEM_1m_small_clip_USGS_3DEP_stoneville") %>%
-                          drop_na()
-
-preproc <- preProcess(cropped_bands_dem_2017[-c(1, 2)], method = c("center", "scale"))
-preprocessed_cropped_bands_2017 <- predict(preproc, cropped_bands_dem_2017) %>%
-                                   rasterFromXYZ(crs = crs)
+preproc <- preProcess(df_cropped_bands_2017[-c(1, 2)], method = c("center", "scale"))
+preprocessed_cropped_bands_2017 <- predict(preproc, df_cropped_bands_2017) %>%
+  rasterFromXYZ(crs = crs)
 
 build_rasters(preprocessed_cropped_bands_2017, models_list, "model_outputs")
+
+# grid sampling tests ##############################################################################
+data <- raster_soil_data %>%
+        as("Spatial")
+crs(data) <- crs
+
+sample_progression <- c(50)
+regular_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
+                                        "regular", preprocessed_cropped_bands_2017,
+                                        n_samples = sample_progression, crs = crs)
+
+# random sampling tests ############################################################################
+data <- raster_soil_data %>%
+        as("Spatial")
+crs(data) <- crs
+
+sample_progression <- c(50)
+regular_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
+                                        "random", preprocessed_cropped_bands_2017,
+                                        n_samples = sample_progression, crs = crs)
 
 # cLHS sampling tests ##############################################################################
 ## Building the models

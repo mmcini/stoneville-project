@@ -316,7 +316,7 @@ build_rasters <- function(rasters, models, folder, file_suffix = "_rf_map.tif") 
   }
 }
 
-build_clhs_rasters <- function(rasters, models, folder, file_suffix = "_rf_map.tif") {
+build_sampling_rasters <- function(rasters, models, folder, file_suffix = "_rf_map.tif") {
   var_names <- names(models)
   for (i in seq_len(length(models))) {
     var <- var_names[i]
@@ -362,7 +362,7 @@ build_clhs_models <- function(data, target_vars, explan_vars,
     cv_models_list <- build_cv_models(points_table, target_vars, explan_vars, seed = 200)
     
     file_suffix <- paste0(iteration, ".tif")
-    build_clhs_rasters(predict_rasters, cv_models_list, "clhs_raster_model_outputs", file_suffix)
+    build_sampling_rasters(predict_rasters, cv_models_list, "clhs_raster_model_outputs", file_suffix)
     
     model_scores <- model_scores %>%
                     rbind(model_scores_tables(cv_models_list, "clhs_points", return = T))
@@ -377,6 +377,51 @@ build_clhs_models <- function(data, target_vars, explan_vars,
     
   }
   path <- paste0("tables/clhs_tests/model_scores_table.csv")
+  write_csv(model_scores, path)
+  return(list_of_models)
+}
+
+build_sampling_models <- function(data, target_vars, explan_vars, area, type, 
+                                  predict_rasters, n_samples = c(), crs, seed = 200) {
+  set.seed(seed)
+  seeds <- runif(length(n_samples))
+  list_of_models <- list()
+  model_scores <- tibble(variable = character(), n_samples = numeric(),
+                       n_cv = numeric(), n_valid = numeric(),
+                       rpiq_cv = numeric(), rpiq_valid = numeric(),
+                       rpd_cv = numeric(), rpd_valid = numeric(),
+                       RMSE_cv = numeric(), RMSE_valid = numeric(),
+                       R2_cv = numeric(), R2_valid = numeric())
+  
+  for (i in seq_len(length(n_samples))) {
+    iteration <- paste0("n_samples_", n_samples[i])
+    set.seed(seeds[i])
+    samples <- area %>% 
+            as("Spatial") %>%
+            spsample(n = n_samples, type = type)
+    points <- closest_points(data, samples)
+    points_table <- points %>%
+                    as_tibble()
+    
+    print(paste("Iteration", i, "of", length(n_samples)))
+    cv_models_list <- build_cv_models(points_table, target_vars, explan_vars, seed = 200)
+    
+    file_suffix <- paste0(iteration, ".tif")
+    build_sampling_rasters(predict_rasters, cv_models_list, paste0(type, "_raster_model_outputs"), file_suffix)
+    
+    model_scores <- model_scores %>%
+                    rbind(model_scores_tables(cv_models_list, paste0(type, "_points"), return = T))
+    list_of_models[[iteration]] <- list(models_list = cv_models_list, points = points)
+  }
+  
+  n_samples_names <- names(list_of_models)
+  for (i in n_samples_names) {
+    path <- paste0("GIS/", type, "_points/", i, ".shp")
+    points_sf <- st_as_sf(list_of_models[[i]]$points)
+    st_write(points_sf, path, delete_dsn = T)
+    
+  }
+  path <- paste0("tables/", type, "_grid_results/model_scores_table.csv")
   write_csv(model_scores, path)
   return(list_of_models)
 }
