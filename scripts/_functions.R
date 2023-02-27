@@ -1,3 +1,4 @@
+library(overlapping)
 library(conflicted)
 library(ggspatial)
 library(tidyverse)
@@ -352,7 +353,6 @@ build_clhs_models <- function(data, target_vars, explan_vars,
                        R2_cv = numeric(), R2_valid = numeric())
   
   for (i in seq_len(length(n_samples))) {
-    iteration <- paste0("n_samples_", n_samples[i])
     set.seed(seeds[i])
     clhs_samples <- clhs(clhs_input, size = n_samples[i], simple = F)$sampled_data
     crs(clhs_samples) <- crs
@@ -360,10 +360,11 @@ build_clhs_models <- function(data, target_vars, explan_vars,
     points_table <- points %>%
                     as_tibble()
     
+    iteration <- paste0("n_samples_", nrow(points_table))
     print(paste("Iteration", i, "of", length(n_samples)))
     cv_models_list <- build_cv_models(points_table, target_vars, explan_vars, seed = 200)
     
-    file_suffix <- paste0(iteration, ".tif")
+    file_suffix <- paste0("_", iteration, ".tif")
     build_sampling_rasters(predict_rasters, cv_models_list, "clhs_raster_model_outputs", file_suffix)
     
     model_scores <- model_scores %>%
@@ -376,9 +377,8 @@ build_clhs_models <- function(data, target_vars, explan_vars,
     path <- paste0("GIS/clhs_points/", i, ".shp")
     points_sf <- st_as_sf(list_of_models[[i]]$points)
     st_write(points_sf, path, delete_dsn = T)
-    
   }
-  path <- paste0("tables/clhs_tests/model_scores_table.csv")
+  path <- paste0("tables/clhs_grid_results/model_scores_table.csv")
   write_csv(model_scores, path)
   return(list_of_models)
 }
@@ -396,7 +396,6 @@ build_sampling_models <- function(data, target_vars, explan_vars, area, type,
                        R2_cv = numeric(), R2_valid = numeric())
   
   for (i in seq_len(length(n_samples))) {
-    iteration <- paste0("n_samples_", n_samples[i])
     set.seed(seeds[i])
     samples <- area %>% 
             as("Spatial") %>%
@@ -405,6 +404,7 @@ build_sampling_models <- function(data, target_vars, explan_vars, area, type,
     points_table <- points %>%
                     as_tibble()
     
+    iteration <- paste0("n_samples_", nrow(points_table))
     print(paste("Iteration", i, "of", length(n_samples)))
     cv_models_list <- build_cv_models(points_table, target_vars, explan_vars, seed = 200)
     
@@ -440,10 +440,11 @@ raster_obs_pred <- function(obs, pred) {
 }
 
 raster_comparisons <- function(type) {
-  files <- list.files("GIS/regular_raster_model_outputs/")
+  files <- list.files(paste0("GIS/", type, "_raster_model_outputs/"))
   sample_numbers <- str_extract(files, "\\d+") %>%
                     as.numeric() %>%
                     unique()
+  sample_numbers <- sample_numbers[order(sample_numbers)]
   vars <- str_extract(files, ".+?(?=_n)") %>%
           unique()
   
@@ -458,11 +459,13 @@ raster_comparisons <- function(type) {
       obs_pred_data <- raster_obs_pred(obs, pred)
       summary_stats <-tibble(R2 = R2(obs_pred_data$pred, obs_pred_data$obs),
                              RMSE = RMSE(obs_pred_data$pred, obs_pred_data$obs),
+                             ov = overlap(list(obs_pred_data$obs, obs_pred_data$pred))$OV,
                              obs_iqr = IQR(obs_pred_data$obs),
                              pred_iqr = IQR(obs_pred_data$pred),
                              obs_var = var(obs_pred_data$obs),
                              pred_var = var(obs_pred_data$pred))
       annotation <- c(
+        paste("\U03B7:", round(summary_stats$ov, 2)),
         paste("R2:", round(summary_stats$R2, 2)),
         paste("RMSE:", round(summary_stats$RMSE, 2)),
         paste("Ref. IQR:", round(summary_stats$obs_iqr, 2)),
@@ -501,7 +504,7 @@ raster_comparisons <- function(type) {
       range <- (max_y - min_y) * 0.8
       density_plot <- density_plot +
         annotate("text", x = max(pivoted_raster_data$values) * 0.8,
-                 y = seq(max_y, max_y - range / 2, -range / 10),
+                 y = seq(max_y, max_y - range / 2, -range / 12),
                  label = annotation, family= "Times New Roman")
       
       if (i == length(sample_numbers)) {

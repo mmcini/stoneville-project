@@ -169,18 +169,48 @@ ggarrange(plotlist = list_of_plots)
 ## Comparing with ground truth
 comparison_plots <- raster_comparisons("regular")
 
-wrap_plots(plotlist = comparison_plots[grepl("OM_PERCENT", names(test))], ncol = 1)
-wrap_plots(plotlist = comparison_plots[grepl("CEC", names(test))], ncol = 1)
+vars <- str_extract(names(comparison_plots), "(?<=samples_).*") %>%
+        unique()
+for (i in vars) {
+  path <- paste0("figures/regular_comparison/", i, "_comparisons.png")
+  wrap_plots(plotlist = comparison_plots[grepl(i, names(comparison_plots))], ncol = 1)
+  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 250, height = 120 * length(vars))
+}
 
 # random sampling tests ############################################################################
 data <- raster_soil_data %>%
         as("Spatial")
 crs(data) <- crs
 
-sample_progression <- c(50)
+sample_progression <- c(50, 100)
 random_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
                                        "random", preprocessed_cropped_bands_2017,
                                        n_samples = sample_progression, crs = crs)
+
+## Checking results
+random_results <- read_csv("tables/random_grid_results/model_scores_table.csv")
+
+list_of_plots <- list()
+for (i in unique(random_results$variable)) {
+  random_plot_data <- random_results %>%
+                       filter(variable == i)
+  
+  plot <- ggplot(random_plot_data, aes(x = n_samples, y = R2_valid)) +
+    geom_line() + ggtitle(i)
+  list_of_plots[[i]] <- plot
+}
+ggarrange(plotlist = list_of_plots)
+
+## Comparing with ground truth
+comparison_plots <- raster_comparisons("random")
+
+vars <- str_extract(names(comparison_plots), "(?<=samples_).*") %>%
+        unique()
+for (i in vars) {
+  path <- paste0("figures/random_comparison/", i, "_comparisons.png")
+  wrap_plots(plotlist = comparison_plots[grepl(i, names(comparison_plots))], ncol = 1)
+  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 250, height = 120 * length(vars))
+}
 
 # cLHS sampling tests ##############################################################################
 ## Building the models
@@ -189,13 +219,11 @@ clhs_rasters <- stack(cropped_bands_2017$B3, cropped_bands_2017$B6,
                       resamp_dem) %>%
                 mask(area_of_interest)
 
-plot(clhs_rasters)
-
 data <- raster_soil_data %>%
         as("Spatial")
 crs(data) <- crs
 
-sample_progression <- c(seq(100, 2100, 400), 2145)
+sample_progression <- c(50, 100)
 clhs_models <- build_clhs_models(data, target_vars, explanatory_vars,
                                  clhs_rasters, preprocessed_cropped_bands_2017,
                                  n_samples = sample_progression, crs = crs)
@@ -213,3 +241,14 @@ for (i in unique(clhs_results$variable)) {
   list_of_plots[[i]] <- plot
 }
 ggarrange(plotlist = list_of_plots)
+
+## Comparing with ground truth
+comparison_plots <- raster_comparisons("clhs")
+
+vars <- str_extract(names(comparison_plots), "(?<=samples_).*") %>%
+        unique()
+for (i in vars) {
+  path <- paste0("figures/clhs_comparison/", i, "_comparisons.png")
+  wrap_plots(plotlist = comparison_plots[grepl(i, names(comparison_plots))], ncol = 1)
+  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 250, height = 120 * length(vars))
+}
