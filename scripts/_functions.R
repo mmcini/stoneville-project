@@ -1,6 +1,8 @@
 library(conflicted)
+library(ggspatial)
 library(tidyverse)
 library(extrafont)
+library(patchwork)
 library(yardstick)
 library(corrplot)
 library(ggrepel)
@@ -398,7 +400,7 @@ build_sampling_models <- function(data, target_vars, explan_vars, area, type,
     set.seed(seeds[i])
     samples <- area %>% 
             as("Spatial") %>%
-            spsample(n = n_samples, type = type)
+            spsample(n = n_samples[i], type = type)
     points <- closest_points(data, samples)
     points_table <- points %>%
                     as_tibble()
@@ -406,7 +408,7 @@ build_sampling_models <- function(data, target_vars, explan_vars, area, type,
     print(paste("Iteration", i, "of", length(n_samples)))
     cv_models_list <- build_cv_models(points_table, target_vars, explan_vars, seed = 200)
     
-    file_suffix <- paste0(iteration, ".tif")
+    file_suffix <- paste0("_", iteration, ".tif")
     build_sampling_rasters(predict_rasters, cv_models_list, paste0(type, "_raster_model_outputs"), file_suffix)
     
     model_scores <- model_scores %>%
@@ -426,6 +428,99 @@ build_sampling_models <- function(data, target_vars, explan_vars, area, type,
   return(list_of_models)
 }
 
+raster_obs_pred <- function(obs, pred) {
+  ## Convert rasters into a table with obs and pred columns
+  obs <- obs %>%
+         as.data.frame(xy = T)
+  names(obs) <- c("x", "y", "obs")
+  pred <- pred %>%
+          as.data.frame()
+  names(pred) <- "pred"
+  return(cbind(obs, pred))
+}
+
+raster_comparisons <- function(type) {
+  files <- list.files("GIS/regular_raster_model_outputs/")
+  sample_numbers <- str_extract(files, "\\d+") %>%
+                    as.numeric() %>%
+                    unique()
+  vars <- str_extract(files, ".+?(?=_n)") %>%
+          unique()
+  
+  list_of_plots <- list()
+  for (i in seq_len(length(sample_numbers))) {
+    for (j in seq_len(length(vars))) {
+      path_obs <- paste0("GIS/rf_model_outputs/", vars[j], "_rf_map.tif")
+      path_pred <- paste0("GIS/", type, "_raster_model_outputs/",
+                          vars[j], "_n_samples_", sample_numbers[i], ".tif")
+      obs <- rast(path_obs)
+      pred <- rast(path_pred)
+      obs_pred_data <- raster_obs_pred(obs, pred)
+      summary_stats <-tibble(R2 = R2(obs_pred_data$pred, obs_pred_data$obs),
+                             RMSE = RMSE(obs_pred_data$pred, obs_pred_data$obs),
+                             obs_iqr = IQR(obs_pred_data$obs),
+                             pred_iqr = IQR(obs_pred_data$pred),
+                             obs_var = var(obs_pred_data$obs),
+                             pred_var = var(obs_pred_data$pred))
+      annotation <- c(
+        paste("R2:", round(summary_stats$R2, 2)),
+        paste("RMSE:", round(summary_stats$RMSE, 2)),
+        paste("Ref. IQR:", round(summary_stats$obs_iqr, 2)),
+        paste("Pred. IQR:", round(summary_stats$pred_iqr, 2)),
+        paste("Ref. variance:", round(summary_stats$obs_var, 2)),
+        paste("Pred. variance:", round(summary_stats$pred_var, 2))
+      )
+      pivoted_raster_data <- raster_obs_pred(obs, pred) %>%
+                             pivot_longer(c("obs", "pred"), names_to = "variables", values_to = "values")
+      rasters_plot <- ggplot() +
+        geom_sf(data = area_of_interest) + xlab("") + ylab("") +
+        geom_raster(data = pivoted_raster_data, aes(x = x, y = y, fill = values)) +
+        facet_wrap(. ~ variables,
+                   labeller = labeller(variables = c(obs = "Reference - 2145 samples",
+                                                     pred = paste("Predicted -", sample_numbers[i], "samples")))) +
+        scale_fill_distiller(type = "div", palette = "Spectral") +
+        guides(fill = guide_colorbar(title = "")) +
+        annotation_scale(data = data.frame(variables = c("pred"))) +
+        annotation_north_arrow(data = data.frame(variables = c("pred")), ## 'data =' plots in only one facet
+                               height = unit(1, "cm"), width = unit(1, "cm"),
+                               pad_x = unit(0.1, "cm"), pad_y = unit(0.5, "cm"),
+                               which_north = T,
+                               style = north_arrow_fancy_orienteering()) +
+        theme(axis.text.y = element_text(angle = 90, hjust = 0.5))
+      
+      density_plot <- ggplot(pivoted_raster_data) +
+        ylab("") + xlab("") + ggtitle(paste(vars[j], "-", sample_numbers[i], "samples")) +
+        geom_density(aes(x = values, fill = variables), alpha = 0.5) +
+        scale_fill_discrete(labels = c("Reference", "Predicted")) +
+        theme(legend.title = element_blank())
+      
+      density_values <- pivoted_raster_data$values[which(pivoted_raster_data$variables == "obs")] %>%
+                        density()
+      max_y <- max(density_values$y) * 1.2 ## getting max and min y values for annotation
+      min_y <- min(density_values$y)
+      range <- (max_y - min_y) * 0.8
+      density_plot <- density_plot +
+        annotate("text", x = max(pivoted_raster_data$values) * 0.8,
+                 y = seq(max_y, max_y - range / 2, -range / 10),
+                 label = annotation, family= "Times New Roman")
+      
+      if (i == length(sample_numbers)) {
+        rasters_plot <- rasters_plot + theme(legend.position = "bottom")
+        density_plot <- density_plot + theme(legend.position = "bottom")
+      } else {
+        rasters_plot <- rasters_plot + theme(legend.position = "none")
+        density_plot <- density_plot + theme(legend.position = "none")
+      }
+      
+      patch <- density_plot + rasters_plot + plot_layout()
+      item_name <- paste0(sample_numbers[i], "_samples_", vars[j])
+      list_of_plots[[item_name]] <- patch
+    }
+  }
+  return(list_of_plots)
+}
+
+## Performs Z-transform back and forth
 z_backtrans_info <- function(x) {
   return(list(mean = mean(x), sd = sd(x)))
 }

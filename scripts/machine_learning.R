@@ -1,16 +1,16 @@
 source("scripts/_functions.R")
 
 # Loading the data #################################################################################
-raw_soil_data <- read_sf("GIS/shapes/swmru_datasites_point_proj_utm15.shp")
+raw_soil_data <- read_sf("GIS/area_outline/swmru_datasites_point_proj_utm15.shp")
 raw_soil_data <- raw_soil_data %>%
                  select(grep("PPM_.", colnames(raw_soil_data)), "OM_PERCENT", "CEC", "WATER_PH")
 crs <- CRS("+proj=utm +zone=15 +datum=WGS84 +units=m +no_defs +type=crs")
 raw_soil_data <- st_transform(raw_soil_data, crs)
 
-files <- list.files("GIS/rasters/sentinel2", pattern = ".*B\\d{2}.*tiff$")
+files <- list.files("GIS/sentinel2_data", pattern = ".*B\\d{2}.*tiff$")
 dates <- as.Date(str_extract(files, "\\d{4}-\\d{2}-\\d{2}"))
 bands <- str_extract(files, "B\\d{2}")
-raster_files <- tibble(files = paste0("GIS/rasters/sentinel2/", files),
+raster_files <- tibble(files = paste0("GIS/sentinel2_data/", files),
                        dates = dates,
                        bands = bands)
 
@@ -26,11 +26,11 @@ for(i in as.character(unique_dates)) {
   names(list_of_bricks[[i]]) <- paste0("B", 1:nlayers(list_of_bricks[[i]]))
 }
 
-dem <- raster("GIS/rasters/DEM/DEM_1m_small_clip_USGS_3DEP_stoneville.tif")
+dem <- raster("GIS/DEM/DEM_1m_small_clip_USGS_3DEP_stoneville.tif")
 dem <- projectRaster(dem, crs = crs)
 
 # Extracting data from rasters #####################################################################
-area_of_interest <- st_read("GIS/shapes/SWMRU_extent.shp")
+area_of_interest <- st_read("GIS/area_outline/SWMRU_extent.shp")
 area_of_interest <- st_transform(area_of_interest, crs)
 
 bands_2017 <- list_of_bricks[["2017-05-01"]] %>%
@@ -94,10 +94,6 @@ pvalue_plot_data <- cor_pvalue$p %>%
                     filter(!variables %in% target_vars) %>%
                     mutate(variables = factor(variables, levels = variables, ordered = T))
 
-for (i in names(cor_plot_data[-1])) {
-  print(paste(pvalue_plot_data[[i]]))
-}
-
 list_of_cor_plots <- list()
 for (i in names(cor_plot_data[-1])) {
   plot <- ggplot(cor_plot_data, aes_string(x = "variables", y = i)) +
@@ -122,8 +118,8 @@ for (i in names(cor_plot_data[-1])) {
 ggarrange(plotlist = list_of_cor_plots)
 
 # Modeling #########################################################################################
-target_vars <- c("OM_PERCENT")
-explanatory_vars <- c("elevation", "ndmi", "B3", "B8", "B11")
+target_vars <- c("OM_PERCENT", "CEC")
+explanatory_vars <- c("elevation", "ndmi", "ndwi", "B3", "B8", "B11")
 data <- raster_soil_data %>%
         as_tibble()
 
@@ -137,24 +133,44 @@ models_list <- build_models(data, target_vars, explanatory_vars, seed = 200)
 
 # Predicting rasters ###############################################################################
 df_cropped_bands_2017 <- cropped_bands_2017 %>%
-  as.data.frame(xy = T) %>%
-  drop_na()
+                         as.data.frame(xy = T) %>%
+                         drop_na()
 
 preproc <- preProcess(df_cropped_bands_2017[-c(1, 2)], method = c("center", "scale"))
 preprocessed_cropped_bands_2017 <- predict(preproc, df_cropped_bands_2017) %>%
-  rasterFromXYZ(crs = crs)
+                                   rasterFromXYZ(crs = crs)
 
-build_rasters(preprocessed_cropped_bands_2017, models_list, "model_outputs")
+build_rasters(preprocessed_cropped_bands_2017, models_list, "rf_model_outputs")
 
 # grid sampling tests ##############################################################################
 data <- raster_soil_data %>%
         as("Spatial")
 crs(data) <- crs
 
-sample_progression <- c(50)
+sample_progression <- c(50, 100)
 regular_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
                                         "regular", preprocessed_cropped_bands_2017,
                                         n_samples = sample_progression, crs = crs)
+
+## Checking results
+regular_results <- read_csv("tables/regular_grid_results/model_scores_table.csv")
+
+list_of_plots <- list()
+for (i in unique(regular_results$variable)) {
+  regular_plot_data <- regular_results %>%
+                       filter(variable == i)
+  
+  plot <- ggplot(regular_plot_data, aes(x = n_samples, y = R2_valid)) +
+    geom_line() + ggtitle(i)
+  list_of_plots[[i]] <- plot
+}
+ggarrange(plotlist = list_of_plots)
+
+## Comparing with ground truth
+comparison_plots <- raster_comparisons("regular")
+
+wrap_plots(plotlist = comparison_plots[grepl("OM_PERCENT", names(test))], ncol = 1)
+wrap_plots(plotlist = comparison_plots[grepl("CEC", names(test))], ncol = 1)
 
 # random sampling tests ############################################################################
 data <- raster_soil_data %>%
@@ -162,9 +178,9 @@ data <- raster_soil_data %>%
 crs(data) <- crs
 
 sample_progression <- c(50)
-regular_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
-                                        "random", preprocessed_cropped_bands_2017,
-                                        n_samples = sample_progression, crs = crs)
+random_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
+                                       "random", preprocessed_cropped_bands_2017,
+                                       n_samples = sample_progression, crs = crs)
 
 # cLHS sampling tests ##############################################################################
 ## Building the models
@@ -185,7 +201,7 @@ clhs_models <- build_clhs_models(data, target_vars, explanatory_vars,
                                  n_samples = sample_progression, crs = crs)
 
 ## Checking results
-clhs_results <- read_csv("tables/clhs_tests/model_scores_table.csv")
+clhs_results <- read_csv("tables/clhs_grid_results/model_scores_table.csv")
 
 list_of_plots <- list()
 for (i in unique(clhs_results$variable)) {
