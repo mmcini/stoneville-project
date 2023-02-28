@@ -447,6 +447,15 @@ raster_comparisons <- function(type) {
   sample_numbers <- sample_numbers[order(sample_numbers)]
   vars <- str_extract(files, ".+?(?=_n)") %>%
           unique()
+  overall_stats <-tibble(n = numeric(),
+                         var = character(),
+                         R2 = numeric(),
+                         RMSE = numeric(),
+                         ov = numeric(),
+                         obs_iqr = numeric(),
+                         pred_iqr = numeric(),
+                         obs_var = numeric(),
+                         pred_var = numeric())
   
   list_of_plots <- list()
   for (i in seq_len(length(sample_numbers))) {
@@ -457,13 +466,16 @@ raster_comparisons <- function(type) {
       obs <- rast(path_obs)
       pred <- rast(path_pred)
       obs_pred_data <- raster_obs_pred(obs, pred)
-      summary_stats <-tibble(R2 = R2(obs_pred_data$pred, obs_pred_data$obs),
-                             RMSE = RMSE(obs_pred_data$pred, obs_pred_data$obs),
-                             ov = overlap(list(obs_pred_data$obs, obs_pred_data$pred))$OV,
-                             obs_iqr = IQR(obs_pred_data$obs),
-                             pred_iqr = IQR(obs_pred_data$pred),
-                             obs_var = var(obs_pred_data$obs),
-                             pred_var = var(obs_pred_data$pred))
+      summary_stats <- tibble(n = sample_numbers[i],
+                              var = vars[j],
+                              R2 = R2(obs_pred_data$pred, obs_pred_data$obs),
+                              RMSE = RMSE(obs_pred_data$pred, obs_pred_data$obs),
+                              ov = overlap(list(obs_pred_data$obs, obs_pred_data$pred))$OV,
+                              obs_iqr = IQR(obs_pred_data$obs),
+                              pred_iqr = IQR(obs_pred_data$pred),
+                              obs_var = var(obs_pred_data$obs),
+                              pred_var = var(obs_pred_data$pred))
+      overall_stats <- rbind(overall_stats, summary_stats)
       annotation <- c(
         paste("\U03B7:", round(summary_stats$ov, 2)),
         paste("R2:", round(summary_stats$R2, 2)),
@@ -520,6 +532,7 @@ raster_comparisons <- function(type) {
       list_of_plots[[item_name]] <- patch
     }
   }
+  write.csv(overall_stats, paste0("tables/", type, "_grid_results/comparison_summary.csv"))
   return(list_of_plots)
 }
 

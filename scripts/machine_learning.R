@@ -118,7 +118,7 @@ for (i in names(cor_plot_data[-1])) {
 ggarrange(plotlist = list_of_cor_plots)
 
 # Modeling #########################################################################################
-target_vars <- c("OM_PERCENT", "CEC")
+target_vars <- c("OM_PERCENT", "CEC", "PPM_K", "PPM_ZN", "WATER_PH")
 explanatory_vars <- c("elevation", "ndmi", "ndwi", "B3", "B8", "B11")
 data <- raster_soil_data %>%
         as_tibble()
@@ -126,7 +126,7 @@ data <- raster_soil_data %>%
 ## Cross validation models and scores
 cv_models_list <- build_cv_models(data, target_vars, explanatory_vars, seed = 200)
 model_scores_cv_figures(cv_models_list)
-model_scores_tables(cv_models_list, "rf_scores", return = T)
+model_scores_tables(cv_models_list, "rf_scores")
 
 ## Models using all data available
 models_list <- build_models(data, target_vars, explanatory_vars, seed = 200)
@@ -147,7 +147,7 @@ data <- raster_soil_data %>%
         as("Spatial")
 crs(data) <- crs
 
-sample_progression <- c(50, 100)
+sample_progression<- c(seq(50, 2050, 200), 2145)
 regular_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
                                         "regular", preprocessed_cropped_bands_2017,
                                         n_samples = sample_progression, crs = crs)
@@ -174,15 +174,31 @@ vars <- str_extract(names(comparison_plots), "(?<=samples_).*") %>%
 for (i in vars) {
   path <- paste0("figures/regular_comparison/", i, "_comparisons.png")
   wrap_plots(plotlist = comparison_plots[grepl(i, names(comparison_plots))], ncol = 1)
-  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 250, height = 120 * length(vars))
+  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 300, height = 250 * length(vars))
 }
+
+## Comparison summary
+regular_summary <- read_csv("tables/regular_grid_results/comparison_summary.csv")
+
+list_of_plots <- list()
+for (i in unique(regular_summary$var)) {
+  regular_plot_data <-  regular_summary %>%
+    filter(var == i)
+  
+  plot <- ggplot(regular_plot_data, aes(x = n, y = ov)) +
+    geom_line() + geom_smooth(se = F) + geom_hline(yintercept = 0.95) + ggtitle(i) +
+    scale_y_continuous(limits = c(0.7, 1), breaks = seq(0.7, 1, 0.05))
+  list_of_plots[[i]] <- plot
+}
+ggarrange(plotlist = list_of_plots)
+regular_plot_comparison <- ggarrange(plotlist = list_of_plots, ncol = 1)
 
 # random sampling tests ############################################################################
 data <- raster_soil_data %>%
         as("Spatial")
 crs(data) <- crs
 
-sample_progression <- c(50, 100)
+sample_progression<- c(seq(50, 2050, 200), 2145)
 random_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
                                        "random", preprocessed_cropped_bands_2017,
                                        n_samples = sample_progression, crs = crs)
@@ -209,8 +225,24 @@ vars <- str_extract(names(comparison_plots), "(?<=samples_).*") %>%
 for (i in vars) {
   path <- paste0("figures/random_comparison/", i, "_comparisons.png")
   wrap_plots(plotlist = comparison_plots[grepl(i, names(comparison_plots))], ncol = 1)
-  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 250, height = 120 * length(vars))
+  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 300, height = 250 * length(vars))
 }
+
+## Comparison summary
+random_summary <- read_csv("tables/random_grid_results/comparison_summary.csv")
+
+list_of_plots <- list()
+for (i in unique(random_summary$var)) {
+  random_plot_data <-  random_summary %>%
+                       filter(var == i)
+  
+  plot <- ggplot(random_plot_data, aes(x = n, y = ov)) +
+    geom_line() + geom_smooth(se = F) + geom_hline(yintercept = 0.95) + ggtitle(i) +
+    scale_y_continuous(limits = c(0.7, 1), breaks = seq(0.7, 1, 0.05))
+  list_of_plots[[i]] <- plot
+}
+ggarrange(plotlist = list_of_plots)
+random_plot_comparison <- ggarrange(plotlist = list_of_plots, ncol = 1)
 
 # cLHS sampling tests ##############################################################################
 ## Building the models
@@ -223,7 +255,7 @@ data <- raster_soil_data %>%
         as("Spatial")
 crs(data) <- crs
 
-sample_progression <- c(50, 100)
+sample_progression<- c(seq(50, 2050, 200), 2145)
 clhs_models <- build_clhs_models(data, target_vars, explanatory_vars,
                                  clhs_rasters, preprocessed_cropped_bands_2017,
                                  n_samples = sample_progression, crs = crs)
@@ -250,5 +282,22 @@ vars <- str_extract(names(comparison_plots), "(?<=samples_).*") %>%
 for (i in vars) {
   path <- paste0("figures/clhs_comparison/", i, "_comparisons.png")
   wrap_plots(plotlist = comparison_plots[grepl(i, names(comparison_plots))], ncol = 1)
-  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 250, height = 120 * length(vars))
+  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 300, height = 250 * length(vars))
 }
+
+## Comparison summary
+clhs_summary <- read_csv("tables/clhs_grid_results/comparison_summary.csv")
+
+list_of_plots <- list()
+for (i in unique(clhs_summary$var)) {
+  clhs_plot_data <-  clhs_summary %>%
+    filter(var == i)
+  
+  plot <- ggplot(clhs_plot_data, aes(x = n, y = ov)) +
+    geom_line() + geom_smooth(se = F) + geom_hline(yintercept = 0.95) + ggtitle(i) +
+    scale_y_continuous(limits = c(0.7, 1), breaks = seq(0.7, 1, 0.05))
+  list_of_plots[[i]] <- plot
+}
+clhs_plot_comparison <- ggarrange(plotlist = list_of_plots, ncol = 1)
+
+regular_plot_comparison + random_plot_comparison + clhs_plot_comparison + plot_layout()
