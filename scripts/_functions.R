@@ -509,14 +509,14 @@ raster_comparisons <- function(type) {
         scale_fill_discrete(labels = c("Reference", "Predicted")) +
         theme(legend.title = element_blank())
       
-      density_values <- pivoted_raster_data$values[which(pivoted_raster_data$variables == "obs")] %>%
+      density_values <- pivoted_raster_data$values[which(pivoted_raster_data$variables == "pred")] %>%
                         density()
       max_y <- max(density_values$y) * 1.2 ## getting max and min y values for annotation
       min_y <- min(density_values$y)
       range <- (max_y - min_y) * 0.8
       density_plot <- density_plot +
-        annotate("text", x = max(pivoted_raster_data$values) * 0.8,
-                 y = seq(max_y, max_y - range / 2, -range / 12),
+        annotate("text", x = max(pivoted_raster_data$values),
+                 y = seq(max_y, max_y - range / 2, -range / 12), hjust = 1,
                  label = annotation, family= "Times New Roman")
       
       if (i == length(sample_numbers)) {
