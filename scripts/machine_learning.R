@@ -6,6 +6,8 @@ raw_soil_data <- raw_soil_data %>%
                  select(grep("PPM_.", colnames(raw_soil_data)), "OM_PERCENT", "CEC", "WATER_PH")
 crs <- CRS("+proj=utm +zone=15 +datum=WGS84 +units=m +no_defs +type=crs")
 raw_soil_data <- st_transform(raw_soil_data, crs)
+area_of_interest <- st_read("GIS/area_outline/SWMRU_extent.shp")
+area_of_interest <- st_transform(area_of_interest, crs)
 
 files <- list.files("GIS/sentinel2_data", pattern = ".*B\\d{2}.*tiff$")
 dates <- as.Date(str_extract(files, "\\d{4}-\\d{2}-\\d{2}"))
@@ -14,25 +16,91 @@ raster_files <- tibble(files = paste0("GIS/sentinel2_data/", files),
                        dates = dates,
                        bands = bands)
 
-## Assigns bricks to a list based on dates
-unique_dates <- unique(raster_files$dates)
-list_of_bricks <- list()
-for(i in as.character(unique_dates)) {
-  paths <- raster_files %>%
-           filter(dates == i) %>%
-           select(files)
-  list_of_bricks[[i]] <- stack(paths[[1]])
-  crs(list_of_bricks[[i]]) <- crs
-  names(list_of_bricks[[i]]) <- paste0("B", 1:nlayers(list_of_bricks[[i]]))
-}
+## Getting raster paths
+selected_dates <- read_csv("tables/nir_test.csv")
+file_names <- paste0(save_path, list.files(save_path, "B\\d\\d(_[1,2]\\dm)?\\.jp2$", recursive = T))
+file_bands <- str_extract(file_names, "B\\d{2}")
+file_dates <- str_extract(file_names, "\\d{8}") %>%
+              as.Date("%Y%m%d")
+
+file_path_table <- tibble(dates = file_dates, bands = file_bands, path = file_names)
 
 dem <- raster("GIS/DEM/DEM_1m_small_clip_USGS_3DEP_stoneville.tif")
 dem <- projectRaster(dem, crs = crs)
 
-# Extracting data from rasters #####################################################################
-area_of_interest <- st_read("GIS/area_outline/SWMRU_extent.shp")
-area_of_interest <- st_transform(area_of_interest, crs)
+## Comparing single rasters and the bare soil mean #################################################
+## Selecting rasters (based on sentinel_data.R)
+selected_files <- file_path_table %>%
+                  filter(file_path_table$dates %in% selected_dates$dates) %>% 
+                  filter(dates == as.Date("2019-01-26") | dates == as.Date("2018-12-17"),
+                         bands == "B08") # selecting two bare soil images for comparison
 
+single_bare_soil_raster_2018 <- raster(selected_files$path[1]) %>%
+                                crop(area_of_interest) %>%
+                                mask(area_of_interest)
+single_bare_soil_raster_2019 <- raster(selected_files$path[2]) %>%
+                                crop(area_of_interest) %>%
+                                mask(area_of_interest)
+mean_bare_soil_raster <- raster("GIS/band_mean/bare_soils_B8_mean.tif")
+
+single_data_2018 <- single_bare_soil_raster_2018 %>%
+                    as.data.frame(xy = T)
+names(single_data_2018) <- c("x", "y", "single_B8")
+single_data_2019 <- single_bare_soil_raster_2019 %>%
+                    as.data.frame(xy = T)
+names(single_data_2019) <- c("x", "y", "single_B8")
+mean_data <- mean_bare_soil_raster %>%
+             as.data.frame(xy = T)
+names(mean_data) <- c("x", "y", "Mean 2018-2019")
+
+single_mean_comparison_data <- cbind(mean_data,
+                                     "2018-12-17" = single_data_2018$single_B8,
+                                     "2019-02-26" = single_data_2019$single_B8) %>%
+                               pivot_longer("Mean 2018-2019":"2019-02-26", names_to = "variables",
+                                            values_to = "Reflectance")
+
+bare_soil_raster <- ggplot() + ylab("") + xlab("") +
+                    geom_raster(data = single_mean_comparison_data, aes(x = x, y = y, fill = Reflectance)) +
+                    facet_wrap(. ~ variables) +
+                    scale_fill_distiller(type = "div", palette = "Spectral", na.value = NA) +
+                    theme(panel.grid = element_blank())
+
+bare_soil_dens <- ggplot(single_mean_comparison_data) +
+                  ylab("") + xlab("") +
+                  geom_density(aes(x = Reflectance)) +
+                  facet_wrap(. ~ variables)
+
+bare_soil_raster + bare_soil_dens + plot_layout(nrow = 2)
+
+## Loading rasters for correlation analysis ########################################################
+selected_files <- file_path_table %>%
+                  filter(file_path_table$dates %in% selected_dates$dates) %>% 
+                  filter(dates == as.Date("2018-12-17")) %>% # selecting one bare soil image
+                  slice(c(1:4, 8:12)) %>%
+                  arrange(bands)
+
+## Band 8 raster to use as reference to resample others
+reference_raster <- raster(selected_files$path[7])
+
+unique_dates <- unique(selected_files$dates)
+list_of_bricks <- list()
+for(i in as.character(unique_dates)) {
+  paths <- selected_files %>%
+           filter(dates == i) %>%
+           select(path)
+  rasters <- resample_bands(paths$path, reference_raster, area_of_interest)
+  list_of_bricks[[i]] <- mask(rasters, area_of_interest)
+  crs(list_of_bricks[[i]]) <- crs
+}
+
+names(list_of_bricks$`2018-12-17`) <- selected_files$bands
+
+export <- rast(list_of_bricks$`2018-12-17`)
+writeRaster(export, "GIS/sentinel2_data.tif")
+
+writeRaster
+
+# Extracting data from rasters #####################################################################
 bands_2017 <- list_of_bricks[["2017-05-01"]] %>%
               terra::mask(area_of_interest)
 ndmi <- ndmi_sentinel_2(bands_2017)
@@ -118,7 +186,7 @@ for (i in names(cor_plot_data[-1])) {
 ggarrange(plotlist = list_of_cor_plots)
 
 # Modeling #########################################################################################
-target_vars <- c("OM_PERCENT", "CEC", "PPM_K", "PPM_ZN", "WATER_PH")
+target_vars <- c("OM_PERCENT", "CEC", "PPM_K")
 explanatory_vars <- c("elevation", "ndmi", "ndwi", "B3", "B8", "B11")
 data <- raster_soil_data %>%
         as_tibble()
@@ -147,7 +215,7 @@ data <- raster_soil_data %>%
         as("Spatial")
 crs(data) <- crs
 
-sample_progression<- c(seq(50, 2050, 200), 2145)
+sample_progression <- c(seq(20, 100, 10), seq(150, 500, 50), seq(600, 1000, 100))
 regular_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
                                         "regular", preprocessed_cropped_bands_2017,
                                         n_samples = sample_progression, crs = crs)
@@ -161,10 +229,11 @@ for (i in unique(regular_results$variable)) {
                        filter(variable == i)
   
   plot <- ggplot(regular_plot_data, aes(x = n_samples, y = R2_valid)) +
-    geom_line() + ggtitle(i)
+    geom_line() + ggtitle(i) +
+    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2))
   list_of_plots[[i]] <- plot
 }
-ggarrange(plotlist = list_of_plots)
+regular_r2_plots <- ggarrange(plotlist = list_of_plots, ncol = 1)
 
 ## Comparing with ground truth
 comparison_plots <- raster_comparisons("regular")
@@ -174,7 +243,9 @@ vars <- str_extract(names(comparison_plots), "(?<=samples_).*") %>%
 for (i in vars) {
   path <- paste0("figures/regular_comparison/", i, "_comparisons.png")
   wrap_plots(plotlist = comparison_plots[grepl(i, names(comparison_plots))], ncol = 1)
-  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 300, height = 250 * length(vars))
+  ggsave(path, device = "png", bg = "white", units = "mm",
+         dpi = 300, width = 300, height = 100 * length(sample_progression),
+         limitsize = F)
 }
 
 ## Comparison summary
@@ -190,7 +261,6 @@ for (i in unique(regular_summary$var)) {
     scale_y_continuous(limits = c(0.7, 1), breaks = seq(0.7, 1, 0.05))
   list_of_plots[[i]] <- plot
 }
-ggarrange(plotlist = list_of_plots)
 regular_plot_comparison <- ggarrange(plotlist = list_of_plots, ncol = 1)
 
 # random sampling tests ############################################################################
@@ -198,7 +268,7 @@ data <- raster_soil_data %>%
         as("Spatial")
 crs(data) <- crs
 
-sample_progression<- c(seq(50, 2050, 200), 2145)
+sample_progression <- c(seq(20, 100, 10), seq(150, 500, 50), seq(600, 1000, 100))
 random_models <- build_sampling_models(data, target_vars, explanatory_vars, area_of_interest,
                                        "random", preprocessed_cropped_bands_2017,
                                        n_samples = sample_progression, crs = crs)
@@ -212,10 +282,11 @@ for (i in unique(random_results$variable)) {
                        filter(variable == i)
   
   plot <- ggplot(random_plot_data, aes(x = n_samples, y = R2_valid)) +
-    geom_line() + ggtitle(i)
+    geom_line() + ggtitle(i) +
+    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2))
   list_of_plots[[i]] <- plot
 }
-ggarrange(plotlist = list_of_plots)
+random_r2_plots <- ggarrange(plotlist = list_of_plots, ncol = 1)
 
 ## Comparing with ground truth
 comparison_plots <- raster_comparisons("random")
@@ -225,7 +296,9 @@ vars <- str_extract(names(comparison_plots), "(?<=samples_).*") %>%
 for (i in vars) {
   path <- paste0("figures/random_comparison/", i, "_comparisons.png")
   wrap_plots(plotlist = comparison_plots[grepl(i, names(comparison_plots))], ncol = 1)
-  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 300, height = 250 * length(vars))
+  ggsave(path, device = "png", bg = "white", units = "mm",
+         dpi = 300, width = 300, height = 100 * length(sample_progression),
+         limitsize = F)
 }
 
 ## Comparison summary
@@ -241,21 +314,18 @@ for (i in unique(random_summary$var)) {
     scale_y_continuous(limits = c(0.7, 1), breaks = seq(0.7, 1, 0.05))
   list_of_plots[[i]] <- plot
 }
-ggarrange(plotlist = list_of_plots)
 random_plot_comparison <- ggarrange(plotlist = list_of_plots, ncol = 1)
 
 # cLHS sampling tests ##############################################################################
 ## Building the models
-clhs_rasters <- stack(cropped_bands_2017$B3, cropped_bands_2017$B6,
-                      cropped_bands_2017$B7, cropped_bands_2017$B8,
-                      resamp_dem) %>%
+clhs_rasters <- stack(cropped_bands_2017$B7, cropped_bands_2017$B11, resamp_dem, ndmi) %>%
                 mask(area_of_interest)
 
 data <- raster_soil_data %>%
         as("Spatial")
 crs(data) <- crs
 
-sample_progression<- c(seq(50, 2050, 200), 2145)
+sample_progression <- c(seq(20, 100, 10), seq(150, 500, 50), seq(600, 1000, 100))
 clhs_models <- build_clhs_models(data, target_vars, explanatory_vars,
                                  clhs_rasters, preprocessed_cropped_bands_2017,
                                  n_samples = sample_progression, crs = crs)
@@ -269,10 +339,11 @@ for (i in unique(clhs_results$variable)) {
                     filter(variable == i)
   
   plot <- ggplot(clhs_plot_data, aes(x = n_samples, y = R2_valid)) +
-    geom_line() + ggtitle(i)
+    geom_line() + ggtitle(i) +
+    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2))
   list_of_plots[[i]] <- plot
 }
-ggarrange(plotlist = list_of_plots)
+clhs_r2_plots <- ggarrange(plotlist = list_of_plots, ncol = 1)
 
 ## Comparing with ground truth
 comparison_plots <- raster_comparisons("clhs")
@@ -282,7 +353,9 @@ vars <- str_extract(names(comparison_plots), "(?<=samples_).*") %>%
 for (i in vars) {
   path <- paste0("figures/clhs_comparison/", i, "_comparisons.png")
   wrap_plots(plotlist = comparison_plots[grepl(i, names(comparison_plots))], ncol = 1)
-  ggsave(path, device = "png", bg = "white", units = "mm", dpi = 300, width = 300, height = 250 * length(vars))
+  ggsave(path, device = "png", bg = "white", units = "mm",
+         dpi = 300, width = 300, height = 100 * length(sample_progression),
+         limitsize = F)
 }
 
 ## Comparison summary
@@ -300,4 +373,13 @@ for (i in unique(clhs_summary$var)) {
 }
 clhs_plot_comparison <- ggarrange(plotlist = list_of_plots, ncol = 1)
 
-regular_plot_comparison + random_plot_comparison + clhs_plot_comparison + plot_layout()
+# Comparing all sampling methods ###################################################################
+p1 <- regular_plot_comparison + plot_annotation(title = "Regular")
+p2 <- random_plot_comparison + plot_annotation(title = "Random")
+p3 <- clhs_plot_comparison + plot_annotation(title = "cLHS")
+wrap_elements(p1) + wrap_elements(p2) + wrap_elements(p3)
+
+p1 <- regular_r2_plots + plot_annotation(title = "Regular")
+p2 <- random_r2_plots + plot_annotation(title = "Random")
+p3 <- clhs_r2_plots + plot_annotation(title = "cLHS")
+wrap_elements(p1) + wrap_elements(p2) + wrap_elements(p3)
