@@ -9,6 +9,7 @@ library(corrplot)
 library(ggrepel)
 library(ggpubr)
 library(raster)
+library(sen2r)
 library(terra)
 library(caret)
 library(rgdal)
@@ -33,12 +34,33 @@ assign_significance <- function(x) {
   )
 }
 
+resample_bands <- function(paths, reference, crop_raster = NULL) {
+  list_of_rasters <- list()
+  count <- 1
+  for (i in paths) {
+    if (!is.null(crop_raster)) {
+      raster <- crop(rast(i), crop_raster)
+    } else {
+      raster <- rast(i)
+    }
+    if (compareGeom(raster, reference, stopOnError = F)) {
+      list_of_rasters[[count]] <- raster
+      count <- count + 1
+    } else {
+      resampled_raster <- resample(raster, reference)
+      list_of_rasters[[count]] <- resampled_raster
+      count <- count + 1
+    }
+  }
+  return(rast(list_of_rasters))
+}
+
 ndmi_sentinel_2 <- function(raster, band_8 = "B8", band_11 = "B11") {
-  return(calc(raster, function (x) {(x[band_8] - x[band_11]) / (x[band_8] + x[band_11])}))
+  return(app(raster, function (x) {(x[band_8] - x[band_11]) / (x[band_8] + x[band_11])}))
 }
 
 ndwi_sentinel_2 <- function(raster, band_8 = "B8", band_12 = "B12") {
-  return(calc(raster, function (x) {(x[band_8] - x[band_12]) / (x[band_8] + x[band_12])}))
+  return(app(raster, function (x) {(x[band_8] - x[band_12]) / (x[band_8] + x[band_12])}))
 }
 
 annotate_valid_scores <- function(data, r2, rmse, y_coord) {
@@ -163,7 +185,7 @@ build_cv_models <- function(data, target_vars, explan_vars, seed = 200) {
     variables <- paste(explan_vars, collapse = " + ")
     formula <- as.formula(paste(target_vars[i], "~", variables))
     set.seed(seed)
-    rf_model <- train(formula, data = train_data, method = "rf",
+    rf_model <- train(formula, data = train_data, method = "rf", importance = T,
                       trControl = control, tuneGrid = param_grid)
     
     models_list[[target_vars[i]]] <- list(model = rf_model, data = data_list)
@@ -504,7 +526,7 @@ raster_comparisons <- function(type) {
         theme(axis.text.y = element_text(angle = 90, hjust = 0.5))
       
       density_plot <- ggplot(pivoted_raster_data) +
-        ylab("") + xlab("") + ggtitle(paste(vars[j], "-", sample_numbers[i], "samples")) +
+        ylab("") + xlab("") + ggtitle(paste(type, "-", vars[j], "-", sample_numbers[i], "samples")) +
         geom_density(aes(x = values, fill = variables), alpha = 0.5) +
         scale_fill_discrete(labels = c("Reference", "Predicted")) +
         theme(legend.title = element_blank())
@@ -534,6 +556,15 @@ raster_comparisons <- function(type) {
   }
   write.csv(overall_stats, paste0("tables/", type, "_grid_results/comparison_summary.csv"))
   return(list_of_plots)
+}
+
+days_difference <- function(dates) {
+  days_diff <- c(0)
+  for (i in seq(2, length(dates), 1)) {
+    diff <- dates[i] - dates[i - 1]
+    days_diff <- rbind(days_diff, diff)
+  }
+  return(days_diff)
 }
 
 ## Performs Z-transform back and forth

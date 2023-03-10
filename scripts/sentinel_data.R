@@ -1,25 +1,9 @@
 source("scripts/_functions.R")
 
-days_difference <- function(dates) {
-  days_diff <- c(0)
-  for (i in seq(2, length(dates), 1)) {
-    diff <- dates[i] - dates[i - 1]
-    days_diff <- rbind(days_diff, diff)
-  }
-  return(days_diff)
-}
-
 #query_list <- s2_list(server = c("scihub", "gcloud"), tile = "15SXT", orbit = "126",
 #                     time_interval = c("2018-07-02", "2019-07-01"))
 save_path <- "D:/Arquivos/temp_rasters_stoneville/"
 ## safe_is_online("C:/Users/nello/DOCUME~1/SEN2R~1/lta_orders/lta_20230303_153543.json")
-#s2_download(query_list, outdir = save_path)
-
-#list <- safe_is_online("C:/Users/nello/DOCUME~1/SEN2R~1/lta_orders/lta_20230303_153543.json")
-
-#query_list <- s2_list(server = c("scihub"), tile = "15SXT", orbit = "126",
-#                      time_interval = c("2019-06-15"))
-#save_path <- "D:/Arquivos/temp_rasters_stoneville/"
 #s2_download(query_list, outdir = save_path)
 
 ## Loading cloud masks
@@ -72,7 +56,7 @@ date_range <- c("2018-01-01", "2020-07-01") ## period of raster images to select
 
 used_files <- file_path_table %>%
               filter(between(dates, as.Date(date_range[1]), as.Date(date_range[2]))) %>%
-              filter(!dates %in% clouded_dates$dates, bands == "B08") %>% ## filtering clouds
+              filter(!dates %in% clouded_dates$dates, bands == "B12") %>% ## filtering clouds
               arrange(dates)
 
 used_files <- used_files %>%
@@ -86,12 +70,18 @@ for (i in unique(as.character(used_files$dates))) {
   paths <- used_files %>%
            filter(dates == i, bands == "B08") %>%
            select(path)
-  list_of_bricks[[i]] <- mask(stack(paths[[1]]), area_of_interest)
+  raster <- crop(stack(paths[[1]]), area_of_interest)
+  list_of_bricks[[i]] <- mask(raster, area_of_interest)
   crs(list_of_bricks[[i]]) <- crs
   len <- length(names(list_of_bricks[[i]])) ## some bands have more than 1 layer, idk why!!
   if (len > 1) {band_names <- rep("B8", len)} else {band_names <- "B8"} ## this fixes the multilayer problem
   names(list_of_bricks[[i]]) <- band_names
 }
+
+stack <- stack(list_of_bricks)
+stats <- app(as(stack, "SpatRaster"), var)
+plot(stats)
+writeRaster(stats, "GIS/bare_soil_temporal_bands/bare_soils_b11_var.tif")
 
 stats_table <- tibble(dates = character(), means = numeric(), sds = numeric(), ranges = numeric())
 for (i in names(list_of_bricks)) {
@@ -114,7 +104,6 @@ ggplot(stats_table, aes(x = dates, y = means)) +
        geom_label(aes(label = format.Date(dates, format = "%d"))) +
        scale_x_date(date_breaks = "1 month",
                     date_labels = "%b/%y")
-
 
 ## Temporary manual selection of data
 bare_soil_dates <- stats_table
@@ -139,20 +128,27 @@ used_bare_soil_files <- rbind(used_bare_soil_files1, used_bare_soil_files2, used
 list_of_bricks <- list()
 for (i in unique(as.character(used_bare_soil_files$dates))) {
   paths <- used_files %>%
-           filter(dates == i, bands == "B08") %>%
+           filter(dates == i, bands == "B12") %>%
            select(path)
   raster <- crop(stack(paths[[1]]), area_of_interest)
   list_of_bricks[[i]] <- mask(raster, area_of_interest) ##CROP BEFORE DOING THIS!!
   crs(list_of_bricks[[i]]) <- crs
   len <- length(names(list_of_bricks[[i]])) ## some bands have more than 1 layer, idk why!!
-  if (len > 1) {band_names <- rep("B8", len)} else {band_names <- "B8"} ## this fixes the multilayer problem
+  if (len > 1) {band_names <- rep("B12", len)} else {band_names <- "B12"} ## this fixes the multilayer problem
   names(list_of_bricks[[i]]) <- band_names
 }
 
 bare_soil_rasters <- stack(list_of_bricks)
 
-bare_soil_rasters_mean <- app(as(bare_soil_rasters, "SpatRaster"), fun = "mean", rm.ma = T)
+bare_soil_rasters_mean <- app(as(bare_soil_rasters, "SpatRaster"), mean)
+plot(bare_soil_rasters_mean)
+bare_soil_rasters_var <- app(as(bare_soil_rasters, "SpatRaster"), var)
+plot(bare_soil_rasters_var)
 
-bare_soil_rasters_mean <- rast("GIS/band_mean/bare_soils_B8_mean.tif")
+writeRaster(bare_soil_rasters_mean, "GIS/bare_soil_temporal_bands/bare_soils_b12_mean.tif")
+writeRaster(bare_soil_rasters_var, "GIS/bare_soil_temporal_bands/bare_soils_b12_var.tif")
+
+bare_soil_rasters_mean <- rast("GIS/bare_soil_temporal_bands/bare_soils_B8_mean.tif")
 
 plot(bare_soil_rasters_mean)
+

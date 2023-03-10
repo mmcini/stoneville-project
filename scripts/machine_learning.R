@@ -18,6 +18,7 @@ raster_files <- tibble(files = paste0("GIS/sentinel2_data/", files),
 
 ## Getting raster paths
 selected_dates <- read_csv("tables/nir_test.csv")
+save_path <- "D:/Arquivos/temp_rasters_stoneville/"
 file_names <- paste0(save_path, list.files(save_path, "B\\d\\d(_[1,2]\\dm)?\\.jp2$", recursive = T))
 file_bands <- str_extract(file_names, "B\\d{2}")
 file_dates <- str_extract(file_names, "\\d{8}") %>%
@@ -25,8 +26,8 @@ file_dates <- str_extract(file_names, "\\d{8}") %>%
 
 file_path_table <- tibble(dates = file_dates, bands = file_bands, path = file_names)
 
-dem <- raster("GIS/DEM/DEM_1m_small_clip_USGS_3DEP_stoneville.tif")
-dem <- projectRaster(dem, crs = crs)
+dem <- rast("GIS/DEM/DEM_1m_small_clip_USGS_3DEP_stoneville.tif")
+dem <- terra::project(dem, "+proj=utm +zone=15 +datum=WGS84 +units=m +no_defs +type=crs")
 
 ## Comparing single rasters and the bare soil mean #################################################
 ## Selecting rasters (based on sentinel_data.R)
@@ -41,7 +42,7 @@ single_bare_soil_raster_2018 <- raster(selected_files$path[1]) %>%
 single_bare_soil_raster_2019 <- raster(selected_files$path[2]) %>%
                                 crop(area_of_interest) %>%
                                 mask(area_of_interest)
-mean_bare_soil_raster <- raster("GIS/band_mean/bare_soils_B8_mean.tif")
+mean_bare_soil_raster <- raster("GIS/bare_soil_temporal_bands/bare_soils_b8_mean.tif")
 
 single_data_2018 <- single_bare_soil_raster_2018 %>%
                     as.data.frame(xy = T)
@@ -73,44 +74,35 @@ bare_soil_dens <- ggplot(single_mean_comparison_data) +
 bare_soil_raster + bare_soil_dens + plot_layout(nrow = 2)
 
 ## Loading rasters for correlation analysis ########################################################
+combined_bare_soil <- rast(list.files("GIS/bare_soil_temporal_bands/", pattern = ".tif$", full.names = T))
+names(combined_bare_soil) <- c("B11_mean", "B11_var", "B12_mean", "B12_var", "B8_mean", "B8_var")
+
 selected_files <- file_path_table %>%
                   filter(file_path_table$dates %in% selected_dates$dates) %>% 
-                  filter(dates == as.Date("2018-12-17")) %>% # selecting one bare soil image
-                  slice(c(1:4, 8:12)) %>%
-                  arrange(bands)
+                  filter(dates == as.Date("2019-01-26"), bands == c("B08","B11", "B12"))
 
 ## Band 8 raster to use as reference to resample others
-reference_raster <- raster(selected_files$path[7])
+reference_raster <- rast(selected_files$path[1]) %>%
+                    crop(area_of_interest) %>%
+                    mask(area_of_interest)
 
-unique_dates <- unique(selected_files$dates)
-list_of_bricks <- list()
-for(i in as.character(unique_dates)) {
-  paths <- selected_files %>%
-           filter(dates == i) %>%
-           select(path)
-  rasters <- resample_bands(paths$path, reference_raster, area_of_interest)
-  list_of_bricks[[i]] <- mask(rasters, area_of_interest)
-  crs(list_of_bricks[[i]]) <- crs
-}
+## Getting single date bands to compare (and resampling them)
+single_raster_bands <- resample_bands(selected_files$path, reference_raster, area_of_interest)
+names(single_raster_bands) <- c("B8 Jan 2019", "B11 Jan 2019", "B2 Jan 2019")
 
-names(list_of_bricks$`2018-12-17`) <- selected_files$bands
-
-export <- rast(list_of_bricks$`2018-12-17`)
-writeRaster(export, "GIS/sentinel2_data.tif")
-
-writeRaster
+combined_rasters <- c(combined_bare_soil, single_raster_bands)
 
 # Extracting data from rasters #####################################################################
-bands_2017 <- list_of_bricks[["2017-05-01"]] %>%
-              terra::mask(area_of_interest)
-ndmi <- ndmi_sentinel_2(bands_2017)
-ndwi <- ndwi_sentinel_2(bands_2017)
-resamp_dem <- terra::resample(dem, bands_2017)
+ndmi <- ndmi_sentinel_2(combined_rasters, band_8 = "B8_mean", band_11 = "B11_mean")
+ndwi <- ndwi_sentinel_2(combined_rasters, band_8 = "B8_mean", band_12 = "B12_mean")
+resamp_dem <- resample(dem, combined_rasters)
+names(ndmi) <- "ndmi"
+names(ndwi) <- "ndwi"
+names(resamp_dem) <- "elevation"
 
-cropped_bands_2017 <- stack(bands_2017, resamp_dem, ndmi, ndwi)
-names(cropped_bands_2017) <- c(names(bands_2017), "elevation", "ndmi", "ndwi")
-
-raster_soil_data <- cbind(raw_soil_data, raster::extract(cropped_bands_2017, raw_soil_data))
+raster_soil_data <- cbind(raw_soil_data, terra::extract(combined_rasters, raw_soil_data),
+                          terra::extract(resamp_dem, raw_soil_data), terra::extract(ndwi, raw_soil_data),
+                          terra::extract(ndmi, raw_soil_data))
 
 # Descriptive stats ################################################################################
 pivoted_data <- raw_soil_data %>%
@@ -130,12 +122,12 @@ ggplot(pivoted_data, aes(x = values)) +
 ## Correlations
 cor <- raster_soil_data %>%
         as_tibble() %>% 
-        select(-geometry) %>%
+        select(-c(geometry, ID, ID.1, ID.2, ID.3)) %>%
         drop_na() %>%
         cor(method = "spearman")
 cor_pvalue <- raster_soil_data %>%
               as_tibble() %>%
-              select(-geometry) %>%
+              select(-c(geometry, ID, ID.1, ID.2, ID.3)) %>%
               drop_na() %>%
               cor.mtest(method = "spearman", conf.level = 0.95) # calculates p-value
 
@@ -145,14 +137,15 @@ corrplot::corrplot(cor, method = "color", order = "hclust",
                    tl.col = "black", pch.cex = 1, sig.level = c(0.001, 0.01, 0.05),
                    insig = "label_sig")
 
+## Correlations of explanatory variables
 target_vars <- c("OM_PERCENT", "CEC", "PPM_P", "PPM_K", "PPM_MG",
                  "PPM_CA", "PPM_S", "PPM_ZN", "WATER_PH")
 cor_plot_data <- cor %>%
-  as_tibble() %>%
-  add_column(variables = rownames(cor)) %>%
-  select("variables", target_vars) %>%
-  filter(!variables %in% target_vars) %>%
-  mutate(variables = factor(variables, levels = variables, ordered = T))
+                 as_tibble() %>%
+                 add_column(variables = rownames(cor)) %>%
+                 select("variables", target_vars) %>%
+                 filter(!variables %in% target_vars) %>%
+                 mutate(variables = factor(variables, levels = variables, ordered = T))
 
 pvalue_plot_data <- cor_pvalue$p %>%
                     as_tibble() %>%
@@ -167,7 +160,8 @@ for (i in names(cor_plot_data[-1])) {
   plot <- ggplot(cor_plot_data, aes_string(x = "variables", y = i)) +
     geom_histogram(stat = "identity") + geom_label(aes(label = pvalue_plot_data[[i]])) +
     geom_hline(yintercept = -0.5) +
-    scale_y_continuous(limits = c(-1, 0.1), breaks = seq(-1, 1, 0.25))
+    scale_y_continuous(limits = c(-1, 0.2), breaks = seq(-1, 1, 0.25)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
   list_of_cor_plots[[i]] <- ggplot_gtable(ggplot_build(plot)) # to solve lazy evaluation  
 }
 ggarrange(plotlist = list_of_cor_plots)
@@ -185,28 +179,61 @@ for (i in names(cor_plot_data[-1])) {
 }
 ggarrange(plotlist = list_of_cor_plots)
 
+## Correlations of target variables
+target_vars <- c("OM_PERCENT", "CEC", "PPM_P", "PPM_K", "PPM_MG",
+                 "PPM_CA", "PPM_S", "PPM_ZN", "WATER_PH")
+cor_plot_data <- cor %>%
+                 as_tibble() %>%
+                 add_column(variables = rownames(cor)) %>%
+                 select("variables", target_vars) %>%
+                 filter(variables %in% target_vars) %>%
+                 mutate(variables = factor(variables, levels = variables, ordered = T))
+
+pvalue_plot_data <- cor_pvalue$p %>%
+                    as_tibble() %>%
+                    mutate(across(everything(), assign_significance)) %>%
+                    add_column(variables = rownames(cor)) %>%
+                    select("variables", target_vars) %>%
+                    filter(variables %in% target_vars) %>%
+                    mutate(variables = factor(variables, levels = variables, ordered = T))
+
+list_of_cor_plots <- list()
+for (i in c("OM_PERCENT", "CEC")) {
+  plot <- ggplot(cor_plot_data, aes_string(x = "variables", y = i)) +
+    geom_histogram(stat = "identity") + geom_label(aes(label = pvalue_plot_data[[i]])) +
+    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  list_of_cor_plots[[i]] <- ggplot_gtable(ggplot_build(plot)) # to solve lazy evaluation  
+}
+ggarrange(plotlist = list_of_cor_plots)
+
 # Modeling #########################################################################################
-target_vars <- c("OM_PERCENT", "CEC", "PPM_K")
-explanatory_vars <- c("elevation", "ndmi", "ndwi", "B3", "B8", "B11")
+target_vars <- c("OM_PERCENT", "CEC")
+explanatory_vars <- c("elevation", "B8_mean", "B11_mean", "B12_mean")
 data <- raster_soil_data %>%
-        as_tibble()
+        as_tibble() %>%
+        select(all_of(c(target_vars, explanatory_vars))) %>%
+        drop_na()
 
 ## Cross validation models and scores
 cv_models_list <- build_cv_models(data, target_vars, explanatory_vars, seed = 200)
 model_scores_cv_figures(cv_models_list)
-model_scores_tables(cv_models_list, "rf_scores")
+model_scores_tables(cv_models_list, "rf_scores", return = T)
 
 ## Models using all data available
 models_list <- build_models(data, target_vars, explanatory_vars, seed = 200)
 
 # Predicting rasters ###############################################################################
-df_cropped_bands_2017 <- cropped_bands_2017 %>%
-                         as.data.frame(xy = T) %>%
-                         drop_na()
+df_combined_rasters <-combined_rasters %>%
+                      as.data.frame(xy = T) %>%
+                      drop_na()
 
-preproc <- preProcess(df_cropped_bands_2017[-c(1, 2)], method = c("center", "scale"))
-preprocessed_cropped_bands_2017 <- predict(preproc, df_cropped_bands_2017) %>%
-                                   rasterFromXYZ(crs = crs)
+preproc <- preProcess(df_combined_rasters[-c(1, 2)], method = c("center", "scale"))
+preprocessed_combined_rasters <- predict(preproc, df_combined_rasters)
+
+rasterize(x = as.matrix(df_combined_rasters[c(1, 2)]), y = .)
+
+as.matrix(df_combined_rasters[c(1, 2)])
 
 build_rasters(preprocessed_cropped_bands_2017, models_list, "rf_model_outputs")
 
