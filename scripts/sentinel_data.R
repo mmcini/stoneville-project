@@ -3,7 +3,6 @@ source("scripts/_functions.R")
 #query_list <- s2_list(server = c("scihub", "gcloud"), tile = "15SXT", orbit = "126",
 #                     time_interval = c("2018-07-02", "2019-07-01"))
 save_path <- "GIS/sentinel2_data/"
-## safe_is_online("C:/Users/nello/DOCUME~1/SEN2R~1/lta_orders/lta_20230303_153543.json")
 #s2_download(query_list, outdir = save_path)
 
 ## Loading cloud masks
@@ -57,10 +56,15 @@ date_range <- c("2018-01-01", "2020-07-01") ## period of raster images to select
 used_files <- file_path_table %>%
               filter(between(dates, as.Date(date_range[1]), as.Date(date_range[2]))) %>%
               filter(!dates %in% clouded_dates$dates,
+                     bands == "B02" |
+                     bands == "B03" |
+                     bands == "B04" |
                      bands == "B08" |
                      bands == "B11" |
                      bands == "B12") %>% ## filtering clouds
               arrange(dates)
+
+number_of_bands <- length(unique(used_files$bands))
 
 used_files <- used_files %>%
               distinct(dates, bands, .keep_all = T) %>% 
@@ -69,8 +73,6 @@ used_files <- used_files %>%
 reference_raster <- rast(used_files$path[1]) %>%
                     crop(area_of_interest) %>%
                     mask(area_of_interest)
-
-rast(list_of_stacks[[1]], nlyrs = 3)
 
 band_names <- unique(used_files$bands)
 list_of_stacks <- list()
@@ -85,7 +87,7 @@ for (i in unique(as.character(used_files$dates))) {
 }
 
 combined_rasters <- rast(list_of_stacks)
-indices <- rep(c(1, 2, 3), nlyr(combined_rasters) / 3) ## indices of groups of layers
+indices <- rep(1:number_of_bands, nlyr(combined_rasters) / 3) ## indices of groups of layers
 
 stats_table <- list()
 bands <- unique(used_files$bands)
@@ -136,12 +138,14 @@ for (i in unique(as.character(used_bare_soil_files$dates))) {
 }
 
 combined_rasters <- rast(list_of_stacks)
-indices <- rep(c(1, 2, 3), nlyr(combined_rasters) / 3) ## indices of groups of layers
+indices <- names(combined_rasters) %>% ## indices of groups of layers
+           str_extract(pattern = "\\d$") %>%
+           as.numeric()
 
 band_means <- tapp(combined_rasters, indices, "mean")
-names(band_means) <- c("B8", "B11", "B12")
+names(band_means) <- band_names
 band_vars <- tapp(combined_rasters, indices, var)
-names(band_vars) <- c("B8", "B11", "B12")
+names(band_vars) <- band_names
 
 write_paths_means <- paste0("GIS/bare_soil_temporal_bands/bare_soils_",
                            unique(used_bare_soil_files$bands),
@@ -150,5 +154,5 @@ write_paths_vars <- paste0("GIS/bare_soil_temporal_bands/bare_soils_",
                           unique(used_bare_soil_files$bands),
                           "_vars.tif")
 
-writeRaster(band_means, write_paths_means)
-writeRaster(band_vars, write_paths_vars)
+writeRaster(band_means, write_paths_means, overwrite = T)
+writeRaster(band_vars, write_paths_vars, overwrite = T)
