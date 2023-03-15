@@ -269,11 +269,10 @@ number_of_bands <- length(unique(definitive_bare_soil_table$bands))
 bare_soil_combined_rasters <- rast(list_of_bare_soils)
 
 stats_table <- list()
-bands <- unique(definitive_bare_soil_table$bands)
-bands <- rep(bands, nlyr(combined_rasters) / length(bands))
+bands <- definitive_bare_soil_table$bands
 stats_table <- tibble(dates = definitive_bare_soil_table$dates, band = bands,
-                      means = global(combined_rasters, "mean", na.rm = T)$mean,
-                      sds = global(combined_rasters, "sd", na.rm = T)$sd) %>%
+                      means = global(bare_soil_combined_rasters, "mean", na.rm = T)$mean,
+                      sds = global(bare_soil_combined_rasters, "sd", na.rm = T)$sd) %>%
                filter(means > 0)
 stats_table$dates <- as.Date(stats_table$dates)
 
@@ -294,7 +293,6 @@ B08_bare_soil_seasonal_var <- ggplot(plot_data, aes(x = dates, y = means)) +
                                            date_labels = "%y")
 
 ## Calculating mean and var rasters
-
 list_of_stat_plots <- list()
 for (i in band_names) {
   ## All files (except clouds)
@@ -321,7 +319,7 @@ for (i in band_names) {
                    geom_density(aes_string(x = i))
   
   ## Bare soils
-  indices <- names(bare_soils_combined_rasters) %>% ## indices of groups of layers
+  indices <- names(bare_soil_combined_rasters) %>% ## indices of groups of layers
              str_extract(pattern = "\\d$") %>%
              as.numeric()
   
@@ -346,19 +344,31 @@ for (i in band_names) {
   list_of_stat_plots[[i]] <- (all_data_mean_plot + bare_soil_mean_plot) / ( all_data_dens + bare_soil_dens)
 }
 
-list_of_stat_plots[[1]]
-list_of_stat_plots[[2]]
-list_of_stat_plots[[3]]
-list_of_stat_plots[[4]]
-list_of_stat_plots[[5]]
-list_of_stat_plots[[6]]
+list_of_stat_plots[["B02"]]
+list_of_stat_plots[["B03"]]
+list_of_stat_plots[["B04"]]
+list_of_stat_plots[["B08"]]
+list_of_stat_plots[["B11"]]
+list_of_stat_plots[["B12"]]
 
-write_paths_means <- paste0("GIS/bare_soil_temporal_bands/bare_soils_",
-                           unique(used_bare_soil_files$bands),
+## Writing rasters using all bands
+write_paths_means <- paste0("GIS/temporal_bands_combined/all_data_",
+                           band_names,
                            "_means.tif")
-write_paths_vars <- paste0("GIS/bare_soil_temporal_bands/bare_soils_",
-                          unique(used_bare_soil_files$bands),
+write_paths_vars <- paste0("GIS/temporal_bands_combined/all_data_",
+                           band_names,
                           "_vars.tif")
 
 writeRaster(band_means, write_paths_means, overwrite = T)
 writeRaster(band_vars, write_paths_vars, overwrite = T)
+
+## Writing rasters using bare soil bands
+write_paths_means <- paste0("GIS/temporal_bands_combined/bare_soils_",
+                           band_names,
+                           "_means.tif")
+write_paths_vars <- paste0("GIS/temporal_bands_combined/bare_soils_",
+                           band_names,
+                          "_vars.tif")
+
+writeRaster(bare_soil_band_means, write_paths_means, overwrite = T)
+writeRaster(bare_soil_band_vars, write_paths_vars, overwrite = T)
